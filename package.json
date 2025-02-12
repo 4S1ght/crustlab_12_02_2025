@@ -11,10 +11,13 @@
   },
   "scripts": {
     "test": "vitest",
-    "dev": "tsc -w"
+    "dev": "tsc -w",
+    "build": "tsc"
   },
   "dependencies": {
-    "sqlite3": "5.1.7"
+    "queue": "7.0.0",
+    "sqlite3": "5.1.7",
+    "zod": "3.24.2"
   },
   "devDependencies": {
     "@types/node": "22.13.1",
