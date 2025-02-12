@@ -1,0 +1,24 @@
+{
+  "name": "crustlab-12.02.2025",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "Aleksander Ciecierski",
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "test": "vitest",
+    "dev": "tsc -w"
+  },
+  "dependencies": {
+    "sqlite3": "5.1.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.1",
+    "typescript": "5.7.3",
+    "vitest": "3.0.5"
+  }
+}

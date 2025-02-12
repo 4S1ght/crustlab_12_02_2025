@@ -1,0 +1,30 @@
+{
+    "include": [
+        "./src/**/*.ts"
+    ],
+    "compilerOptions": {
+        
+        // Base options
+        "esModuleInterop": true,
+        "target": "es2022",
+        "moduleDetection": "force",
+        "isolatedModules": true,
+        "strictNullChecks": true,
+        "skipLibCheck": true,
+    
+        // Strictness
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "moduleResolution": "NodeNext",
+        "module": "NodeNext",
+        "lib": [
+            "es2022"
+        ],
+    
+        // Emit
+        "outDir": "./dist",
+        "sourceMap": true,
+        "declaration": true,
+    },
+
+}
