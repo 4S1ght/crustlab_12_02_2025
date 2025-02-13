@@ -4,7 +4,7 @@ import sqlite3 from "sqlite3"
 
 // Types ==========================================================================================
 
-type TSQLParams = Array<string | number> | Record<string, string | number>
+type TSQLParams = Array<string | number> | Record<string, any>
 
 // Exports ========================================================================================
 
@@ -19,7 +19,6 @@ export default class Database {
 
     /**
      * Opens the internal SQLite 3 database.  
-     * @throws if the database cannot be opened.
      */
     public static async open() {
 
@@ -41,7 +40,7 @@ export default class Database {
                 CREATE TABLE users (
                     id              TEXT PRIMARY KEY,
                     name            TEXT,
-                    user_created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    user_created_at INTEGER DEFAULT (STRFTIME('%s', 'now'))
                 );
 
                 CREATE TABLE accounts (
@@ -49,7 +48,7 @@ export default class Database {
                     user_id              TEXT NOT NULL,
                     currency             TEXT CHECK(currency IN ('USD', 'EUR', 'PLN')) NOT NULL,
                     balance              INTEGER NOT NULL DEFAULT 0,
-                    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at           INTEGER DEFAULT (STRFTIME('%s', 'now')),
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
@@ -61,8 +60,8 @@ export default class Database {
                     transaction_type     TEXT CHECK(transaction_type in ('deposit', 'withdrawal', 'transfer', 'exchange')) NOT NULL,
                     amount               INTEGER NOT NULL,
                     currency             TEXT CHECK(currency IN ('USD', 'EUR', 'PLN')) NOT NULL,
-                    rate                 REAL,
-                    made_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    target_currency      TEXT CHECK(currency IN ('USD', 'EUR', 'PLN')),
+                    made_at              INTEGER DEFAULT (STRFTIME('%s', 'now'))
                 );
 
                 CREATE TRIGGER create_accounts_after_user_insert
@@ -107,14 +106,6 @@ export default class Database {
         return new Promise<T[]>((resolve, reject) => {
             this.db.all(sql, params, (error, rows) => {
                 error ? reject(error) : resolve(rows as T[])
-            })
-        })
-    }
-
-    public serialize() {
-        return new Promise<void>((resolve, reject) => {
-            this.db.serialize(() => {
-                resolve()
             })
         })
     }

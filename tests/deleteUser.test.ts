@@ -6,7 +6,7 @@ describe('User deletion', async () => {
     const api = await TransactionsAPI.open()
 
     test('delete a user', async () => {
-        const userID = await api.createUser('Anna Kowalska')
+        const userID = await api.createUser('Danuta Kowalska')
         await api.deleteUser(userID)
         expect(await api.getUser(userID)).toBeUndefined()
     })

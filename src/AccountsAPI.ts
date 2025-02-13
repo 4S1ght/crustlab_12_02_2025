@@ -4,10 +4,9 @@ import { randomUUID } from "node:crypto"
 import z from 'zod'
 import Queue from "queue"
 import Database from "./Database.js"
+import ExchangeAndFees, { ZCurrency, TCurrency, TForeignCurrency } from "./ExchangeAndFees.js"
 
 // Types ==========================================================================================
-
-type TCurrency = z.infer<typeof ZCurrency>
 
 export interface TUser {
     /** User ID (UUIDv4)              */ id: string
@@ -23,42 +22,57 @@ export interface TAccount {
     /** Time of account creation       */ account_created_at: Date
 }
 
+interface TTransactionHistoryOptions {
+    /** Returns the transaction results only for a specific user */ userID?: string
+    /** Returns only transactions in this currency.              */ currency?: TCurrency
+    /** Minimum transaction amount                               */ maxAmount?: number
+    /** Maximum transaction amount                               */ minAmount?: number
+    /** Transaction type                                         */ transactionType?: 'deposit' | 'withdrawal' | 'transfer' |'exchange'
+    /** The oldest the transaction can be.                       */ startDate?: number
+    /** The latest the transaction can be.                       */ endDate?: number
+}
+
+export interface TTransaction {
+    /** Transaction ID                  */ id: number
+    /** ID of the account owner         */ user_id: string
+    /** ID of the issuer account        */ issuer_account_id: number
+    /** ID of the receiver account      */ recipient_account_id: number
+    /** Type of the transaction         */ transaction_type: 'deposit' | 'withdrawal' | 'transfer' |'exchange'
+    /** Transaction amount              */ amount: number
+    /** Currency of the transaction     */ currency: TCurrency
+    /** Target currency of the exchange */ target_currency?: TCurrency
+    /** Time of the transaction         */ made_at: number
+}
+
 // Guards =========================================================================================
 
 const ZUsername = z.string().min(1)
 const ZUserID = z.string().uuid()
+const ZNumber = z.number().positive()
 
-const ZInteger = z.number().positive()
-const ZCurrency = z.enum(['PLN', 'EUR', 'USD'])
+const ZTransactionHistoryOptions = z.object({
+    userID: z.string().uuid().optional(),
+    currency: ZCurrency.optional(),
+    maxAmount: ZNumber.optional(),
+    minAmount: ZNumber.optional(),
+    transactionType: z.enum(['deposit', 'withdrawal', 'transfer', 'exchange']).optional(),
+    startDate: z.number().optional(),
+    endDate: z.number().optional()
+} as const) satisfies z.ZodType<TTransactionHistoryOptions>
 
 // Exports ========================================================================================
 
 export default class AccountsAPI {
 
     private declare db: Database
-
-    public declare exchangeRateUSD: number
-    public declare exchangeRateEUR: number
-
-    public declare serviceFee: number
-    public declare totalCollectedFees: number
-
     private declare queue: Queue
+    public eaf = new ExchangeAndFees()
 
     public static async open(): Promise<AccountsAPI> {
 
         const self = new this()
         self.db = await Database.open()
-        self.queue = new Queue({
-            autostart: true,
-        })
-
-        if (!process.env.CRUSTLAB_SERVICE_FEE) {
-            process.loadEnvFile()
-            self.serviceFee      = parseFloat(process.env.SERVICE_FEE!)
-            self.exchangeRateEUR = parseFloat(process.env.EXCHANGE_EUR!)
-            self.exchangeRateUSD = parseFloat(process.env.EXCHANGE_USD!)
-        }
+        self.queue = new Queue({ autostart: true })
 
         return self
     }
@@ -67,21 +81,28 @@ export default class AccountsAPI {
 
     /**
      * Creates a new user of a given name and returns its ID.
-     * TODO: Wrap inside a queue
      */
-    public async createUser(username: string): Promise<string> {
+    public createUser(username: string): Promise<string> {
+        return new Promise((resolve, reject) => {
+            this.queue.push(async () => {
+                try {
 
-        ZUsername.parse(username)
+                    ZUsername.parse(username)
+            
+                    const id = randomUUID()
+                    await this.db.run(
+                        /*sql*/`INSERT INTO users (id, name) VALUES (?, ?)`,
+                        [id, username]
+                    )
+            
+                    resolve(id)
 
-        const id = randomUUID()
-
-        this.db.run(
-            /*sql*/`INSERT INTO users (id, name) VALUES (?, ?)`,
-            [id, username]
-        )
-
-        return id
-
+                } 
+                catch (error) {
+                    reject(error)
+                }
+            })
+        })
     }
 
     /**
@@ -104,55 +125,53 @@ export default class AccountsAPI {
     
     /**
      * Deletes a user by their ID.
-     * TODO: Wrap inside a queue
      */
     public async deleteUser(userID: string): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            this.queue.push(async () => {
+                try {
 
-        ZUserID.parse(userID)
+                    ZUserID.parse(userID)
+            
+                    await this.db.run(
+                        /*sql*/`DELETE FROM users WHERE id = ?`,
+                        [userID]
+                    )
 
-        await this.db.run(
-            /*sql*/`DELETE FROM users WHERE id = ?`,
-            [userID]
-        )
+                    resolve()
+
+                } 
+                catch (error) {
+                    reject(error)
+                }
+            })
+        })
 
     }
 
     // Transactions & side-effects ----------------------------------
 
-    
     /**
      * Creates a new deposit in a user's account.
-     *
-     * Notes:
-     * - Due to using SQLite, only database-wide transactions are supported,
-     * but when using a more advanced database it'd be best to leverage them
-     * in order to guarantee sync between `accounts` and `deposits` tables
-     * 
-     * @param amount - Note that the "amount" MUST be represented **cents**. Eg.
-     * 100 euro cents, 100 cents USD, etc. This is to prevent rounding errors
-     * during common operations like addition and subtraction.
-     * 
      */
     public async deposit(userID: string, amount: number, currency: TCurrency): Promise<void> {
         return new Promise((resolve, reject) => {
             this.queue.push(async () => {
+                let inTransaction = false
                 try {
 
-                    const typeGuards = [
-                        ZUserID.safeParse(userID).error,
-                        ZInteger.safeParse(amount).error,
-                        ZCurrency.safeParse(currency).error
-                    ]
-                    if (typeGuards.some(x => x instanceof z.ZodError)) return reject(new Error('deposit(): Invalid one or more parameters parameters.'))
-            
+                    ZUserID.parse(userID)
+                    ZNumber.parse(amount)
+                    ZCurrency.parse(currency)
+                    
                     const account = await this.getAccount(userID, currency)
-                    if (!account) throw new Error(`deposit(): Account of user "${userID}" not found.`)
+                    if (!account) return reject(new Error(`deposit(): Account of user "${userID}" not found.`))
             
                     const startingBalance = account.balance
-                    const totalServiceFee = amount * this.serviceFee
+                    const totalServiceFee = amount * this.eaf.serviceFee
                     const finalBalance = startingBalance + amount - totalServiceFee
-                    this.collectServiceFee(totalServiceFee)
 
+                    inTransaction = true
                     await this.db.run('BEGIN TRANSACTION')
             
                     await this.db.run(
@@ -173,11 +192,14 @@ export default class AccountsAPI {
                     )
 
                     await this.db.run('COMMIT')
+                    this.eaf.collectServiceFee(totalServiceFee, currency)
                     resolve()
 
                 } 
                 catch (error) {
-                    this.db.run('ROLLBACK')
+                    // Doing manual checks here because some errors before BEGIN TRANSACTION
+                    // were caught and caused ROLLBACK to throw an uncaught error.
+                    if (inTransaction) this.db.run('ROLLBACK')
                     reject(error)
                 }
             })
@@ -185,9 +207,207 @@ export default class AccountsAPI {
         
     }
 
-    public async withdraw() {}
-    public async transfer() {}
-    public async exchange() {}
+    /**
+     * Withdraws money from a user's account.
+     * If the account doesn't have enough to withdraw the requested amount + fees,
+     * an error will be thrown due to insufficient funds.
+     * @returns Amount of withdrawn money - for convenience
+     */
+    public withdraw(userID: string, amount: number, currency: TCurrency) {
+        return new Promise<number>((resolve, reject) => {
+            this.queue.push(async () => {
+                let inTransaction = false
+                try {
+                    
+                    ZUserID.parse(userID)
+                    ZNumber.parse(amount)
+                    ZCurrency.parse(currency)
+                        
+                    const account = await this.getAccount(userID, currency)
+                    if (!account) return reject(new Error(`withdraw(): Account of user "${userID}" not found.`))
+    
+                    // The balance needed to withdraw the exact sum requested + service fees
+                    const fee = amount * this.eaf.serviceFee
+                    const totalWithdraw = amount + fee
+                    if (totalWithdraw > account.balance) return reject(new Error(`withdraw(): Insufficient balance.`))
+                    
+                    await this.db.run('BEGIN TRANSACTION')
+                    inTransaction = true
+
+                    await this.db.run(
+                        /*sql*/`
+                            UPDATE accounts
+                            SET    balance = $balance
+                            WHERE  user_id = $user_id AND currency = $currency;
+                        `,
+                        { $user_id: userID, $balance: account.balance - totalWithdraw, $currency: currency }
+                    )
+                    
+                    await this.db.run(
+                        /*sql*/`
+                            INSERT INTO transactions (user_id,  issuer_account_id,  transaction_type, amount,  currency)
+                            VALUES                   ($user_id, $issuer_account_id, 'withdrawal',     $amount, $currency);
+                        `,
+                        { $user_id: userID, $issuer_account_id: account.id, $amount: amount, $currency: currency }
+                    )
+                    
+                    await this.db.run('COMMIT')
+                    this.eaf.collectServiceFee(fee, currency)
+                    resolve(amount)
+
+                } 
+                catch (error) {
+                    if (inTransaction) this.db.run('ROLLBACK')
+                    reject(error)
+                }
+            })
+        })
+    }
+
+    /**
+     * Transfers money from one user to another.
+     * @param issuerUserID - User transferring the money
+     * @param recipientUserID - User recieving the money
+     * @param amount - Amount of money
+     * @param currency - Currency, eg. PLN, USD, EUR.
+     * @returns 
+     */
+    public transfer(issuerUserID: string, recipientUserID: string, amount: number, currency: TCurrency) {
+        return new Promise((resolve, reject) => {
+            this.queue.push(async () => {
+                let inTransaction = false
+                try {
+                    
+                    ZUserID.parse(issuerUserID)
+                    ZUserID.parse(recipientUserID)
+                    ZNumber.parse(amount)
+                    ZCurrency.parse(currency)
+
+                    const issuerAccount = await this.getAccount(issuerUserID, currency)
+                    if (!issuerAccount) return reject(new Error(`transfer(): Account of issuer "${issuerUserID}" not found.`))
+
+                    const recipientAccount = await this.getAccount(recipientUserID, currency)
+                    if (!recipientAccount) return reject(new Error(`transfer(): Account of recipient "${recipientUserID}" not found.`))
+                    
+                    const fee = amount * this.eaf.serviceFee
+                    const totalWithdraw = amount + fee
+                    if (totalWithdraw > issuerAccount.balance) return reject(new Error(`transfer(): Insufficient balance.`))
+
+                    await this.db.run('BEGIN TRANSACTION')
+                    inTransaction = true
+
+                    // Remove money from issuer (including fees)
+                    await this.db.run(
+                        /*sql*/`
+                            UPDATE accounts
+                            SET    balance = $balance
+                            WHERE  user_id = $user_id AND currency = $currency;
+                        `,
+                        { $user_id: issuerUserID, $balance: issuerAccount.balance - totalWithdraw, $currency: currency }
+                    )
+
+                    // Transfer to recipient (after fees)
+                    await this.db.run(
+                        /*sql*/`
+                            UPDATE accounts
+                            SET    balance = $balance
+                            WHERE  user_id = $user_id AND currency = $currency;
+                        `,
+                        { $user_id: recipientUserID, $balance: recipientAccount.balance + amount, $currency: currency }
+                    )
+                    
+                    // Log the transaction
+                    await this.db.run(
+                        /*sql*/`
+                            INSERT INTO transactions (user_id,  issuer_account_id,  recipient_account_id,  transaction_type, amount,  currency)
+                            VALUES                   ($user_id, $issuer_account_id, $recipient_account_id, 'transfer',       $amount, $currency);
+                        `,
+                        { $user_id: issuerUserID, $issuer_account_id: issuerAccount.id, $recipient_account_id: recipientAccount.id, $amount: amount, $currency: currency}
+                    )
+                    
+                    await this.db.run('COMMIT')
+                    this.eaf.collectServiceFee(fee, currency)
+                    resolve(amount)
+                    
+                }
+                catch (error) {
+                    if (inTransaction) this.db.run('ROLLBACK')
+                    reject(error)
+                }
+            })
+        })
+    }
+
+    /**
+     * Exchanges money from one currency to another - For a given user.
+     */
+    public exchange(userID: string, amount: number, fromCurrency: TCurrency, toCurrency: TCurrency) {
+        return new Promise<void>((resolve, reject) => {
+            this.queue.push(async () => {
+                let inTransaction = false
+                try {
+                    
+                    ZUserID.parse(userID)
+                    ZNumber.parse(amount)
+                    ZCurrency.parse(fromCurrency)
+                    ZCurrency.parse(toCurrency)
+
+                    const sourceAccount = await this.getAccount(userID, fromCurrency)
+                    if (!sourceAccount) return reject(new Error(`exchange(): Account of user "${userID}" not found.`))
+
+                    const destinationAccount = await this.getAccount(userID, toCurrency)
+                    if (!destinationAccount) return reject(new Error(`exchange(): Account of user "${userID}" not found.`))
+            
+                    const fee = amount * this.eaf.serviceFee
+                    const totalWithdraw = amount + fee
+                    if (totalWithdraw > sourceAccount.balance) return reject(new Error(`exchange(): Insufficient balance.`))
+
+                    const exchanged = this.eaf.toExchangedAmount(amount, fromCurrency, toCurrency)
+
+                    await this.db.run('BEGIN TRANSACTION')
+                    inTransaction = true
+
+                    // Remove money from source account (including fees)
+                    await this.db.run(
+                        /*sql*/`
+                            UPDATE accounts
+                            SET    balance = $balance
+                            WHERE  user_id = $user_id AND currency = $currency;
+                        `,
+                        { $user_id: userID, $balance: sourceAccount.balance - totalWithdraw, $currency: fromCurrency }
+                    )
+
+                    // Transfer money to destination account after exchanging.
+                    await this.db.run(
+                        /*sql*/`
+                            UPDATE accounts
+                            SET    balance = $balance
+                            WHERE  user_id = $user_id AND currency = $currency;
+                        `,
+                        { $user_id: userID, $balance: destinationAccount.balance + exchanged, $currency: toCurrency }
+                    )
+
+                    // Log the transaction
+                    await this.db.run(
+                        /*sql*/`
+                            INSERT INTO transactions (user_id,  issuer_account_id,  recipient_account_id,  transaction_type, amount,  currency,  target_currency)
+                            VALUES                   ($user_id, $issuer_account_id, $recipient_account_id, 'exchange',       $amount, $currency, $target_currency);
+                        `,
+                        { $user_id: userID, $issuer_account_id: sourceAccount.id, $recipient_account_id: destinationAccount.id, $amount: amount, $currency: fromCurrency }
+                    )
+                    
+                    await this.db.run('COMMIT')
+                    this.eaf.collectServiceFee(fee, fromCurrency)
+                    resolve()
+
+                } 
+                catch (error) {
+                    if (inTransaction) this.db.run('ROLLBACK')
+                    reject(error)
+                }
+            })
+        })
+    }
 
     // User, account & balance information --------------------------
 
@@ -240,17 +460,35 @@ export default class AccountsAPI {
     }
 
     // Transaction history ------------------------------------------
+ 
+    public async getTransactionHistory(options: TTransactionHistoryOptions): Promise<TTransaction[]> {
 
-    // Service fees -------------------------------------------------
+        ZTransactionHistoryOptions.parse(options)
+        
+        return await this.db.all(
+            /*sql*/`
+                SELECT * FROM transactions
+                WHERE 
+                        ($user_id          IS NULL OR user_id = $user_id)
+                    AND ($currency         IS NULL OR currency = $currency)
+                    AND ($min_amount       IS NULL OR amount >= $min_amount)
+                    AND ($max_amount       IS NULL OR amount <= $max_amount)
+                    AND ($transaction_type IS NULL OR transaction_type = $transaction_type)
+                    AND ($start_date       IS NULL OR made_at >= $start_date)
+                    AND ($end_date         IS NULL OR made_at <= $end_date);
 
-    /**
-     * Collects the service fee for a given transaction.
-     * 
-     * In reality these should be redirected elsewhere, but as this example
-     * works entirely in memory, I have decided to skip that part.
-     */
-    private collectServiceFee(fee: number) {
-        this.totalCollectedFees += fee
+            `,
+            {
+                $user_id:           options.userID,
+                $currency:          options.currency,
+                $min_amount:        options.minAmount,
+                $max_amount:        options.maxAmount,
+                $transaction_type:  options.transactionType,
+                $start_date:        options.startDate,
+                $end_date:          options.endDate
+            }
+        )
+
     }
 
 }

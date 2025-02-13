@@ -7,13 +7,13 @@ describe('User creation & retrieval', async () => {
 
     test('create valid user', async () => {
         // Create the user
-        const userID = await api.createUser('Jan Kowalski')
+        const userID = await api.createUser('Anna Kowalska')
         expect(typeof userID).toBe('string')
 
         // Retrieve the new user
         const user = await api.getUser(userID)
         expect(user.id).toBe(userID)
-        expect(user.name).toBe('Jan Kowalski')
+        expect(user.name).toBe('Anna Kowalska')
         expect(user.user_created_at).toBeInstanceOf(Date)
     })
 
@@ -34,6 +34,5 @@ describe('User creation & retrieval', async () => {
     test('retrieve a non-existent user (invalid ID)', async () => {
         await expect(() => api.getUser("invalid-user-id")).rejects.toThrow()
     })
-
 
 })
