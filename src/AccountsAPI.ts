@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto"
 import z from 'zod'
 import Queue from "queue"
 import Database from "./Database.js"
-import ExchangeAndFees, { ZCurrency, TCurrency, TForeignCurrency } from "./ExchangeAndFees.js"
+import ExchangeAndFees, { ZCurrency, TCurrency } from "./ExchangeAndFees.js"
 
 // Types ==========================================================================================
 
@@ -22,26 +22,36 @@ export interface TAccount {
     /** Time of account creation       */ account_created_at: Date
 }
 
+export interface TTransaction {
+    /** Transaction ID                          */ id: number
+    /** ID of the account owner                 */ user_id: string
+    /** ID of the recipient account owner       */ target_user_id?: string
+    /** ID of the issuer account                */ issuer_account_id: number
+    /** ID of the receiver account              */ recipient_account_id?: number
+    /** Type of the transaction                 */ transaction_type: 'deposit' | 'withdrawal' | 'transfer' |'exchange'
+    /** Transaction amount                      */ amount: number
+    /** The currency that has been exchanged to */ exchanged_to?: TCurrency
+    /** Currency of the transaction             */ currency: TCurrency
+    /** Target currency of the exchange         */ target_currency?: TCurrency
+    /** Fee paid                                */ fee_paid: number
+    /** Time of the transaction                 */ made_at: number
+}
+
 interface TTransactionHistoryOptions {
     /** Returns the transaction results only for a specific user */ userID?: string
     /** Returns only transactions in this currency.              */ currency?: TCurrency
     /** Minimum transaction amount                               */ maxAmount?: number
     /** Maximum transaction amount                               */ minAmount?: number
-    /** Transaction type                                         */ transactionType?: 'deposit' | 'withdrawal' | 'transfer' |'exchange'
+    /** Transaction type                                         */ transactionType?: 'deposit' | 'withdrawal' | 'transfer' | 'exchange'
     /** The oldest the transaction can be.                       */ startDate?: number
     /** The latest the transaction can be.                       */ endDate?: number
 }
 
-export interface TTransaction {
-    /** Transaction ID                  */ id: number
-    /** ID of the account owner         */ user_id: string
-    /** ID of the issuer account        */ issuer_account_id: number
-    /** ID of the receiver account      */ recipient_account_id: number
-    /** Type of the transaction         */ transaction_type: 'deposit' | 'withdrawal' | 'transfer' |'exchange'
-    /** Transaction amount              */ amount: number
-    /** Currency of the transaction     */ currency: TCurrency
-    /** Target currency of the exchange */ target_currency?: TCurrency
-    /** Time of the transaction         */ made_at: number
+interface TUserProfitsOptions {
+    userID: string
+    transactionTypes?: Array<'deposit' | 'withdrawal' | 'transfer' | 'exchange'>
+    startDate?: number
+    endDate?: number
 }
 
 // Guards =========================================================================================
@@ -59,6 +69,13 @@ const ZTransactionHistoryOptions = z.object({
     startDate: z.number().optional(),
     endDate: z.number().optional()
 } as const) satisfies z.ZodType<TTransactionHistoryOptions>
+
+const ZUserProfitsOptions = z.object({
+    userID: z.string().uuid(),
+    transactionTypes: z.array(z.enum(['deposit', 'withdrawal', 'transfer', 'exchange'])).optional(),
+    startDate: z.number().optional(),
+    endDate: z.number().optional()
+} as const) satisfies z.ZodType<TUserProfitsOptions>
 
 // Exports ========================================================================================
 
@@ -185,10 +202,10 @@ export default class AccountsAPI {
                     
                     await this.db.run(
                         /*sql*/`
-                            INSERT INTO transactions (user_id,  issuer_account_id,  transaction_type, amount,  currency)
-                            VALUES                   ($user_id, $issuer_account_id, 'deposit',        $amount, $currency);
+                            INSERT INTO transactions (user_id,  issuer_account_id,  transaction_type, amount,  currency, fee_paid)
+                            VALUES                   ($user_id, $issuer_account_id, 'deposit',        $amount, $currency, $fee_paid);
                         `,
-                        { $user_id: userID, $issuer_account_id: account.id, $amount: amount, $currency: currency }
+                        { $user_id: userID, $issuer_account_id: account.id, $amount: amount, $currency: currency, $fee_paid: totalServiceFee}
                     )
 
                     await this.db.run('COMMIT')
@@ -245,10 +262,10 @@ export default class AccountsAPI {
                     
                     await this.db.run(
                         /*sql*/`
-                            INSERT INTO transactions (user_id,  issuer_account_id,  transaction_type, amount,  currency)
-                            VALUES                   ($user_id, $issuer_account_id, 'withdrawal',     $amount, $currency);
+                            INSERT INTO transactions (user_id,  issuer_account_id,  transaction_type, amount,  currency,  fee_paid)
+                            VALUES                   ($user_id, $issuer_account_id, 'withdrawal',     $amount, $currency, $fee_paid);
                         `,
-                        { $user_id: userID, $issuer_account_id: account.id, $amount: amount, $currency: currency }
+                        { $user_id: userID, $issuer_account_id: account.id, $amount: amount, $currency: currency, $fee_paid: fee }
                     )
                     
                     await this.db.run('COMMIT')
@@ -319,10 +336,10 @@ export default class AccountsAPI {
                     // Log the transaction
                     await this.db.run(
                         /*sql*/`
-                            INSERT INTO transactions (user_id,  issuer_account_id,  recipient_account_id,  transaction_type, amount,  currency)
-                            VALUES                   ($user_id, $issuer_account_id, $recipient_account_id, 'transfer',       $amount, $currency);
+                            INSERT INTO transactions (user_id,  target_user_id,  issuer_account_id,  recipient_account_id,  transaction_type, amount,  currency, fee_paid)
+                            VALUES                   ($user_id, $target_user_id, $issuer_account_id, $recipient_account_id, 'transfer',       $amount, $currency, $fee_paid);
                         `,
-                        { $user_id: issuerUserID, $issuer_account_id: issuerAccount.id, $recipient_account_id: recipientAccount.id, $amount: amount, $currency: currency}
+                        { $user_id: issuerUserID, $target_user_id: recipientUserID, $issuer_account_id: issuerAccount.id, $recipient_account_id: recipientAccount.id, $amount: amount, $currency: currency, $fee_paid: fee }
                     )
                     
                     await this.db.run('COMMIT')
@@ -390,10 +407,10 @@ export default class AccountsAPI {
                     // Log the transaction
                     await this.db.run(
                         /*sql*/`
-                            INSERT INTO transactions (user_id,  issuer_account_id,  recipient_account_id,  transaction_type, amount,  currency,  target_currency)
-                            VALUES                   ($user_id, $issuer_account_id, $recipient_account_id, 'exchange',       $amount, $currency, $target_currency);
+                            INSERT INTO transactions (user_id,  issuer_account_id,  recipient_account_id,  transaction_type, amount,  exchanged_to,  currency,  target_currency, fee_paid)
+                            VALUES                   ($user_id, $issuer_account_id, $recipient_account_id, 'exchange',       $amount, $exchanged_to, $currency, $target_currency, $fee_paid);
                         `,
-                        { $user_id: userID, $issuer_account_id: sourceAccount.id, $recipient_account_id: destinationAccount.id, $amount: amount, $currency: fromCurrency }
+                        { $user_id: userID, $issuer_account_id: sourceAccount.id, $recipient_account_id: destinationAccount.id, $amount: amount, $exchanged_to: exchanged, $currency: fromCurrency, $target_currency: toCurrency, $fee_paid: fee}
                     )
                     
                     await this.db.run('COMMIT')
@@ -436,7 +453,7 @@ export default class AccountsAPI {
     }
 
     /**
-     * Retrieves the information about a user's account of specific currency.
+     * Retrieves the information about a user's account - Of a given currency.
      * @param userID 
      * @param currency 
      * @returns 
@@ -461,6 +478,12 @@ export default class AccountsAPI {
 
     // Transaction history ------------------------------------------
  
+    /**
+     * Returns the full history of transactions originating from a user.  
+     * Allows filtering by currency, amount range, transaction type, start and end date.
+     * @param options 
+     * @returns 
+     */
     public async getTransactionHistory(options: TTransactionHistoryOptions): Promise<TTransaction[]> {
 
         ZTransactionHistoryOptions.parse(options)
@@ -488,6 +511,92 @@ export default class AccountsAPI {
                 $end_date:          options.endDate
             }
         )
+
+    }
+
+    /**
+     * Calculates profits & fees for a specific user's account(s).  
+     * The values are normalized to PLN.  
+     */
+    public async getUserProfits(options: TUserProfitsOptions) {
+
+        ZUserProfitsOptions.parse(options)
+        
+        const transactions = await this.db.all<TTransaction>(
+            /*sql*/`
+                SELECT * FROM transactions
+                WHERE   user_id = $user_id OR target_user_id = $user_id
+                    AND ($start_date       IS NULL OR made_at >= $start_date)
+                    AND ($end_date         IS NULL OR made_at <= $end_date);
+            `,
+            { $user_id: options.userID, $start_date: options.startDate, $end_date: options.endDate }
+        )   
+
+        type TResults = {
+            totalProfits: number
+            totalFees:    number
+            transactions: TTransaction[]
+        }
+        const results: TResults = {
+            totalProfits: 0,
+            totalFees:    0,
+            transactions: []
+        }
+
+        const toPLN = (transaction: TTransaction): [number, number] => ([
+            this.eaf.toExchangedAmount(transaction.amount, transaction.currency, 'PLN'),
+            this.eaf.toExchangedAmount(transaction.fee_paid, transaction.currency, 'PLN')
+        ])
+
+        for (const transaction of transactions) {
+
+            // Filter for specific transaction types.
+            if (options.transactionTypes && !options.transactionTypes.includes(transaction.transaction_type)) continue
+
+            // Deposits
+            if (transaction.transaction_type === 'deposit') {
+                const [deposited, fee] = toPLN(transaction)
+                results.totalProfits += deposited - fee
+                results.totalFees += fee
+                results.transactions.push(transaction)
+            }
+
+            // Withdrawals
+            if (transaction.transaction_type === 'withdrawal') {
+                const [withdrawn, fee] = toPLN(transaction)
+                results.totalProfits -= (withdrawn + fee)
+                results.totalFees += fee
+                results.transactions.push(transaction)
+            }
+
+            // Transfers
+            if (transaction.transaction_type === 'transfer') {
+                // Incoming transfers
+                    if (transaction.target_user_id === options.userID) {
+                        const [transferred] = toPLN(transaction)
+                        results.totalProfits += transferred
+                        results.transactions.push(transaction)
+                    }
+                // Outgoing transfers
+                if (transaction.user_id === options.userID) {
+                    const [transferred, fee] = toPLN(transaction)
+                    results.totalProfits -= (transferred + fee)
+                    results.totalFees += fee
+                    results.transactions.push(transaction)
+                }
+            }
+
+            // Exchanges
+            if (transaction.transaction_type === 'exchange') {
+                const [_, fee] = toPLN(transaction)
+                results.totalFees += fee
+                results.transactions.push(transaction)
+            }
+
+        }
+
+
+        return results
 
     }
 

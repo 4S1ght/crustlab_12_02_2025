@@ -36,7 +36,6 @@ describe('Transaction history', async () => {
         expect(await api.getTransactionHistory({ startDate: someTimeAgo })).toHaveLength(4)
         expect(await api.getTransactionHistory({ endDate: someTimeFromNow })).toHaveLength(4)
         expect(await api.getTransactionHistory({ endDate: someTimeAgo })).toHaveLength(0)
-
     })
 
 })

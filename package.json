@@ -2,7 +2,7 @@
   "name": "crustlab-12.02.2025",
   "version": "1.0.0",
   "description": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "author": "Aleksander Ciecierski",
   "type": "module",
   "main": "dist/index.js",

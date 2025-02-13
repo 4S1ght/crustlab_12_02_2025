@@ -44,7 +44,9 @@ export default class Database {
                 );
 
                 CREATE TABLE accounts (
-                    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    -- Not using UUIDs here since I can't really load SQLite extensions easily 
+                    -- in this demo because I don't know what OS & arch this will be running on
+                    id                   INTEGER PRIMARY KEY AUTOINCREMENT, 
                     user_id              TEXT NOT NULL,
                     currency             TEXT CHECK(currency IN ('USD', 'EUR', 'PLN')) NOT NULL,
                     balance              INTEGER NOT NULL DEFAULT 0,
@@ -55,12 +57,15 @@ export default class Database {
                 CREATE TABLE transactions (
                     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id              TEXT NOT NULL,
+                    target_user_id       TEXT,
                     issuer_account_id    INTEGER NOT NULL,  -- Account from which the transaction was made
                     recipient_account_id INTEGER,           -- Account to which the transaction was made - nullable for withdrawals & exchanges
                     transaction_type     TEXT CHECK(transaction_type in ('deposit', 'withdrawal', 'transfer', 'exchange')) NOT NULL,
                     amount               INTEGER NOT NULL,
+                    exchanged_to         INTEGER,           -- Transferred amount (in target currency)
                     currency             TEXT CHECK(currency IN ('USD', 'EUR', 'PLN')) NOT NULL,
                     target_currency      TEXT CHECK(currency IN ('USD', 'EUR', 'PLN')),
+                    fee_paid             INTEGER NOT NULL,
                     made_at              INTEGER DEFAULT (STRFTIME('%s', 'now'))
                 );
 
